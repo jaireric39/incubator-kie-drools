@@ -72,35 +72,42 @@ public class GroupByTest extends BaseModelTest {
     @Test
     public void providedInstance() {
         String str = "import " + Person.class.getCanonicalName() + ";\n" +
-                "import " + Map.class.getCanonicalName() + ";\n" +
-                "global Map results;\n" +
-                "rule X when\n" +
-                "groupby( $p: Person (); " +
-                "$key : $p.getName().substring(0, 1); " +
-                "$sumOfAges : sum($p.getAge()); " +
-                "$sumOfAges > 36)" +
-                "then\n" +
-                "  results.put($key, $sumOfAges);\n" +
-                "end";
+             "import " + Map.class.getCanonicalName() + ";\n" +
+             "import java.util.Map;\n" +
+             "import java.util.HashMap;\n" +
+             "global Map results;\n" +
+             "rule X when\n" +
+             "  $groupedAges : Map() from accumulate(\n" +
+             "    Person($firstLetter : name.substring(0, 1), $age : age),\n" +
+             "    init( Map groupedAges = new HashMap(); ),\n" +
+             "    action( \n" +
+             "      Integer sum = (Integer) groupedAges.getOrDefault($firstLetter, 0);\n" +
+             "      groupedAges.put($firstLetter, sum + $age);\n" +
+             "    ),\n" +
+             "    result( groupedAges )\n" +
+             "  )\n" +
+             "  $entry : Map.Entry(value > 36) from $groupedAges.entrySet()\n" +
+             "then\n" +
+             "  results.put((String) $entry.getKey(), (Integer) $entry.getValue());\n" +
+             "end";
 
         assertSessionHasProperties(str, ksession -> {
-            Map results = new HashMap();
-            ksession.setGlobal( "results", results );
-
+            Map<String, Integer> results = new HashMap<>();
+            ksession.setGlobal("results", results);
+    
             ksession.insert(new Person("Mark", 42));
             ksession.insert(new Person("Edson", 38));
             FactHandle meFH = ksession.insert(new Person("Mario", 45));
             ksession.insert(new Person("Maciej", 39));
             ksession.insert(new Person("Edoardo", 33));
             FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
-            ksession.fireAllRules();
 
             assertThat(results.size()).isEqualTo(2);
             assertThat(results.get("E")).isEqualTo(71);
             assertThat(results.get("M")).isEqualTo(126);
             results.clear();
 
-            ksession.delete( meFH );
+            ksession.delete(meFH);
             ksession.fireAllRules();
 
             assertThat(results.size()).isEqualTo(1);
@@ -116,7 +123,6 @@ public class GroupByTest extends BaseModelTest {
             assertThat(results.get("M")).isEqualTo(119);
         });
     }
-
     @Test
     public void testSumPersonAgeGroupByInitialWithAcc() {
         String str =
