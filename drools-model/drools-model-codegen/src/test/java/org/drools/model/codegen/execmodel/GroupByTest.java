@@ -16,1122 +16,1561 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.drools.modelcompiler;
+package org.drools.model.codegen.execmodel;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
-import org.drools.base.base.ClassObjectType;
-import org.drools.base.definitions.rule.impl.QueryImpl;
-import org.drools.base.definitions.rule.impl.RuleImpl;
-import org.drools.base.rule.Accumulate;
-import org.drools.base.rule.Pattern;
-import org.drools.core.ClockType;
-import org.drools.core.base.accumulators.CollectSetAccumulateFunction;
-import org.drools.core.rule.consequence.InternalMatch;
-import org.drools.model.DSL;
-import org.drools.model.Global;
-import org.drools.model.Index;
-import org.drools.model.Model;
-import org.drools.model.PatternDSL;
-import org.drools.model.Query;
-import org.drools.model.Query2Def;
-import org.drools.model.Rule;
-import org.drools.model.Variable;
-import org.drools.model.functions.Predicate1;
-import org.drools.model.impl.ModelImpl;
-import org.drools.model.view.ViewItem;
-import org.drools.modelcompiler.constraints.LambdaConstraint;
-import org.drools.modelcompiler.domain.Adult;
-import org.drools.modelcompiler.domain.Child;
-import org.drools.modelcompiler.domain.Man;
-import org.drools.modelcompiler.domain.Pair;
-import org.drools.modelcompiler.domain.Person;
-import org.drools.modelcompiler.domain.Relationship;
-import org.drools.modelcompiler.domain.Result;
-import org.drools.modelcompiler.domain.StockTick;
-import org.drools.modelcompiler.domain.Toy;
-import org.drools.modelcompiler.domain.Woman;
-import org.drools.modelcompiler.dsl.pattern.D;
-import org.drools.modelcompiler.util.EvaluationUtil;
+import org.apache.commons.math3.util.Pair;
+import org.drools.core.common.InternalFactHandle;
+import org.drools.core.reteoo.RuleTerminalNodeLeftTuple;
+import org.drools.model.codegen.execmodel.domain.Child;
+import org.drools.model.codegen.execmodel.domain.Parent;
+import org.drools.model.codegen.execmodel.domain.Person;
+import org.drools.model.functions.accumulate.GroupKey;
 import org.junit.Test;
-import org.kie.api.KieBase;
-import org.kie.api.KieServices;
-import org.kie.api.conf.EventProcessingOption;
-import org.kie.api.runtime.ClassObjectFilter;
 import org.kie.api.runtime.KieSession;
-import org.kie.api.runtime.KieSessionConfiguration;
-import org.kie.api.runtime.conf.ClockTypeOption;
 import org.kie.api.runtime.rule.FactHandle;
-import org.kie.api.runtime.rule.QueryResults;
-import org.kie.api.time.SessionPseudoClock;
+import org.kie.api.runtime.rule.Match;
+import org.kie.internal.event.rule.RuleEventListener;
+import org.kie.internal.event.rule.RuleEventManager;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.drools.model.DSL.accFunction;
-import static org.drools.model.DSL.accumulate;
-import static org.drools.model.DSL.after;
-import static org.drools.model.DSL.and;
-import static org.drools.model.DSL.declarationOf;
-import static org.drools.model.DSL.execute;
-import static org.drools.model.DSL.globalOf;
-import static org.drools.model.DSL.not;
-import static org.drools.model.DSL.on;
-import static org.drools.model.DSL.or;
-import static org.drools.model.DSL.reactiveFrom;
-import static org.drools.model.DSL.supply;
-import static org.drools.model.DSL.valueOf;
-import static org.drools.model.PatternDSL.alphaIndexedBy;
-import static org.drools.model.PatternDSL.betaIndexedBy;
-import static org.drools.model.PatternDSL.pattern;
-import static org.drools.model.PatternDSL.query;
-import static org.drools.model.PatternDSL.reactOn;
-import static org.drools.model.PatternDSL.rule;
-import static org.drools.model.PatternDSL.when;
+import static org.junit.jupiter.api.Assertions.assertAll;
 
-public class PatternDSLTest {
+public class GroupByTest extends BaseModelTest {
 
-    @Test
-    public void testBeta() {
-        Result result = new Result();
-        Variable<Person> markV = declarationOf( Person.class );
-        Variable<Person> olderV = declarationOf( Person.class );
-
-        Rule rule = rule( "beta" )
-                .build(
-                        pattern(markV)
-                                .expr("exprA", p -> p.getName().equals( "Mark" ),
-                                        alphaIndexedBy( String.class, Index.ConstraintType.EQUAL, 1, p -> p.getName(), "Mark" ),
-                                        reactOn( "name", "age" )),
-                        pattern(olderV)
-                                .expr("exprB", p -> !p.getName().equals("Mark"),
-                                        alphaIndexedBy( String.class, Index.ConstraintType.NOT_EQUAL, 1, p -> p.getName(), "Mark" ),
-                                        reactOn( "name" ))
-                                .expr("exprC", markV, (p1, p2) -> p1.getAge() > p2.getAge(),
-                                        betaIndexedBy( int.class, Index.ConstraintType.GREATER_THAN, 0, p -> p.getAge(), p -> p.getAge() ),
-                                        reactOn( "age" )),
-                        on(olderV, markV).execute((p1, p2) -> result.setValue( p1.getName() + " is older than " + p2.getName()))
-                );
-
-        Model model = new ModelImpl().addRule( rule );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-
-        KieSession ksession = kieBase.newKieSession();
-
-        Person mark = new Person("Mark", 37);
-        Person edson = new Person("Edson", 35);
-        Person mario = new Person("Mario", 40);
-
-        FactHandle markFH = ksession.insert(mark);
-        FactHandle edsonFH = ksession.insert(edson);
-        FactHandle marioFH = ksession.insert(mario);
-
-        ksession.fireAllRules();
-        assertThat(result.getValue()).isEqualTo("Mario is older than Mark");
-
-        result.setValue( null );
-        ksession.delete( marioFH );
-        ksession.fireAllRules();
-        assertThat(result.getValue()).isNull();
-
-        mark.setAge( 34 );
-        ksession.update( markFH, mark, "age" );
-
-        ksession.fireAllRules();
-        assertThat(result.getValue()).isEqualTo("Edson is older than Mark");
+    public GroupByTest( RUN_TYPE testRunType ) {
+        super( testRunType );
     }
 
-    @Test
-    public void testBetaWithBinding() {
-        Variable<Person> markV = declarationOf(Person.class);
-        Variable<Integer> markAge = declarationOf(Integer.class);
-        Variable<Person> olderV = declarationOf(Person.class);
-
-        Rule rule = rule( "beta" )
-                .build(
-                        pattern(markV)
-                                .expr("exprA", p -> p.getName().equals( "Mark" ),
-                                        alphaIndexedBy( String.class, Index.ConstraintType.EQUAL, 1, p -> p.getName(), "Mark" ),
-                                        reactOn( "name", "age" ))
-                                .bind(markAge, p -> p.getAge(), reactOn("age")
-                        ),
-                        pattern(olderV)
-                                .expr("exprB", p -> !p.getName().equals("Mark"),
-                                        alphaIndexedBy( String.class, Index.ConstraintType.NOT_EQUAL, 1, p -> p.getName(), "Mark" ),
-                                        reactOn( "name" ))
-                                .expr("exprC", markAge, (p1, age) -> p1.getAge() > age,
-                                        betaIndexedBy( int.class, Index.ConstraintType.GREATER_THAN, 0, p -> p.getAge(), int.class::cast ),
-                                        reactOn( "age" )),
-                        on(olderV, markV).execute((drools, p1, p2) -> drools.insert(p1.getName() + " is older than " + p2.getName()))
-                );
-
-        Model model = new ModelImpl().addRule(rule);
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel(model);
-
-        KieSession ksession = kieBase.newKieSession();
-
-        Person mark = new Person("Mark", 37);
-        Person edson = new Person("Edson", 35);
-        Person mario = new Person("Mario", 40);
-
-        FactHandle markFH = ksession.insert(mark);
-        FactHandle edsonFH = ksession.insert(edson);
-        FactHandle marioFH = ksession.insert(mario);
-
-        ksession.fireAllRules();
-        Collection<String> results = getObjectsIntoList(ksession, String.class);
-        assertThat(results).containsExactlyInAnyOrder("Mario is older than Mark");
-
-        ksession.delete(marioFH);
-        ksession.fireAllRules();
-
-        mark.setAge(34);
-        ksession.update(markFH, mark, "age");
-
-        ksession.fireAllRules();
-        results = getObjectsIntoList(ksession, String.class);
-        assertThat(results).containsExactlyInAnyOrder("Mario is older than Mark", "Edson is older than Mark");
-    }
-
-    @Test
-    public void testOr() {
-        Result result = new Result();
-        Variable<Person> personV = declarationOf( Person.class );
-        Variable<Person> markV = declarationOf( Person.class );
-        Variable<String> nameV = declarationOf( String.class );
-
-        Rule rule = rule( "or" )
-                .build(
-                        or(
-                                pattern( personV ).expr("exprA", p -> p.getName().equals("Mark")),
-                                and(
-                                        pattern( markV ).expr("exprA", p -> p.getName().equals("Mark")),
-                                        pattern( personV ).expr("exprB", markV, (p1, p2) -> p1.getAge() > p2.getAge())
-                                )
-                        ),
-                        pattern( nameV ).expr("exprC", personV, (s, p) -> s.equals( p.getName() )),
-                        on(nameV).execute( result::setValue )
-                );
-
-        Model model = new ModelImpl().addRule( rule );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-
-        KieSession ksession = kieBase.newKieSession();
-
-        ksession.insert( "Mario" );
-        ksession.insert(new Person("Mark", 37));
-        ksession.insert(new Person("Edson", 35));
-        ksession.insert(new Person("Mario", 40));
-        ksession.fireAllRules();
-
-        assertThat(result.getValue()).isEqualTo("Mario");
-    }
-
-    @Test
-    public void testNot() {
-        Result result = new Result();
-        Variable<Person> oldestV = DSL.declarationOf(  Person.class );
-        Variable<Person> otherV = DSL.declarationOf(  Person.class );
-
-        Rule rule = rule("not")
-                .build(
-                        pattern( oldestV ),
-                        not( pattern( otherV ).expr( "exprA", oldestV, (p1, p2) -> p1.getAge() > p2.getAge()) ),
-                        on(oldestV).execute(p -> result.setValue( "Oldest person is " + p.getName()))
-                );
-
-        Model model = new ModelImpl().addRule( rule );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-
-        KieSession ksession = kieBase.newKieSession();
-
-        ksession.insert(new Person("Mark", 37));
-        ksession.insert(new Person("Edson", 35));
-        ksession.insert(new Person("Mario", 40));
-
-        ksession.fireAllRules();
-        assertThat(result.getValue()).isEqualTo("Oldest person is Mario");
-    }
-
-    @Test
-    public void testAccumulate() {
-        Result result = new Result();
-        Variable<Person> person = declarationOf(  Person.class );
-        Variable<Integer> resultSum = declarationOf(  Integer.class );
-        Variable<Double> resultAvg = declarationOf(  Double.class );
-        Variable<Integer> age = declarationOf(  Integer.class );
-
-        Rule rule = rule("accumulate")
-                .build(
-                        accumulate( pattern( person ).expr(p -> p.getName().startsWith("M")).bind(age, Person::getAge),
-                                accFunction(org.drools.core.base.accumulators.IntegerSumAccumulateFunction::new, age).as(resultSum),
-                                accFunction(org.drools.core.base.accumulators.AverageAccumulateFunction::new, age).as(resultAvg)),
-                        on(resultSum, resultAvg)
-                                .execute((sum, avg) -> result.setValue( "total = " + sum + "; average = " + avg ))
-                );
-
-        Model model = new ModelImpl().addRule( rule );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-
-        KieSession ksession = kieBase.newKieSession();
-
-        ksession.insert(new Person("Mark", 37));
-        ksession.insert(new Person("Edson", 35));
-        ksession.insert(new Person("Mario", 40));
-
-        ksession.fireAllRules();
-        assertThat(result.getValue()).isEqualTo("total = 77; average = 38.5");
-    }
-
-    @Test
-    public void testAccumulateConstant() {
-        Result result = new Result();
-        Variable<Person> person = declarationOf(Person.class);
-        Variable<Integer> resultSum = declarationOf(Integer.class);
-        Variable<Integer> constant = declarationOf(Integer.class);
-
-        Rule rule = D.rule("X").build(D.accumulate(D.pattern(person).expr((_this) -> _this.getName().startsWith("M")),
-                                                   D.accFunction(org.drools.core.base.accumulators.IntegerSumAccumulateFunction.class,
-                                                                 valueOf(2)).as(resultSum)),
-                                      D.on(resultSum).execute((drools, $sum) -> result.setValue("total = " + $sum)));
-
-        Model model = new ModelImpl().addRule(rule);
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel(model);
-
-        KieSession ksession = kieBase.newKieSession();
-
-        ksession.insert(new Person("Mark", 37));
-        ksession.insert(new Person("Edson", 35));
-        ksession.insert(new Person("Mario", 40));
-
-        ksession.fireAllRules();
-        assertThat(result.getValue()).isEqualTo("total = 4");
-    }
-
-    @Test
-    public void testAccumuluateWithAnd2() {
-        Variable<Object> var_$pattern_Object$1$ = declarationOf(Object.class, "$pattern_Object$1$");
-        Variable<Child> var_$c = declarationOf(Child.class, "$c");
-        Variable<Adult> var_$a = declarationOf(Adult.class, "$a");
-        Variable<Integer> var_$parentAge = declarationOf(Integer.class, "$parentAge");
-        Variable<Integer> var_$expr$5$ = declarationOf(Integer.class, "$expr$5$");
-
-        Rule rule = rule("R").build(
-                accumulate(
-                        and(
-                            pattern(var_$c)
-                                    .expr("$expr$1$", (_this) -> _this.getAge() < 10,
-                                            alphaIndexedBy(int.class, Index.ConstraintType.LESS_THAN, 0, _this -> _this.getAge(), 10),
-                                            reactOn("age")),
-                            pattern(var_$a)
-                                    .expr("$expr$2$", var_$c, (_this, $c) -> _this.getName().equals($c.getParent()), reactOn("name"))
-                                    .bind(var_$expr$5$, var_$c, ($a, $c) -> $a.getAge() + $c.getAge())
-                        ),
-                        accFunction(org.drools.core.base.accumulators.IntegerSumAccumulateFunction.class, var_$expr$5$).as(var_$parentAge)),
-                on(var_$parentAge).execute((drools, $parentAge) -> {
-                    drools.insert(new Result($parentAge));
-                }));
-
-        Model model = new ModelImpl().addRule(rule);
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel(model);
-
-        KieSession ksession = kieBase.newKieSession();
-
-        Adult a = new Adult( "Mario", 43 );
-        Child c = new Child( "Sofia", 6, "Mario" );
-
-        ksession.insert( a );
-        ksession.insert( c );
-        ksession.fireAllRules();
-
-        Collection<Result> results = getObjectsIntoList(ksession, Result.class);
-        assertThat(results).contains(new Result(49));
-    }
-
-    @Test
-    public void testQueryInRule() {
-        Variable<Person> personV = DSL.declarationOf(  Person.class );
-
-        Query2Def<Person, Integer> qdef = query( "olderThan", Person.class, Integer.class );
-        Query query = qdef.build( pattern( qdef.getArg1() ).expr("exprA", qdef.getArg2(), ( p, a) -> p.getAge() > a) );
-
-        Variable<Person> personVRule = DSL.declarationOf(  Person.class );
-        Rule rule = rule("R")
-                .build(
-                        qdef.call(personVRule, valueOf(40)),
-                        on(personVRule).execute((drools, p) -> drools.insert(new Result(p.getName())) )
-                );
-
-        Model model = new ModelImpl().addQuery( query ).addRule( rule );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-
-        KieSession ksession = kieBase.newKieSession();
-
-        ksession.insert( new Person( "Mark", 39 ) );
-        ksession.insert( new Person( "Mario", 41 ) );
-
-        ksession.fireAllRules();
-
-        Collection<Result> results = (Collection<Result>) ksession.getObjects( new ClassObjectFilter( Result.class ) );
-        assertThat(results.size()).isEqualTo(1);
-        assertThat(results.iterator().next().getValue()).isEqualTo("Mario");
-    }
-
-    @Test
-    public void testQueryInvokingQuery() {
-        Variable<Relationship> relV = DSL.declarationOf( Relationship.class );
-
-        Query2Def<String, String> query1Def = query( "isRelatedTo1", String.class, String.class );
-        Query2Def<String, String> query2Def = query( "isRelatedTo2", String.class, String.class );
-
-        Query query2 = query2Def.build(
-                pattern( relV )
-                        .expr("exprA", query2Def.getArg1(), ( r, s) -> r.getStart().equals( s ))
-                        .expr("exprB", query2Def.getArg2(), ( r, e) -> r.getEnd().equals( e ))
-        );
-
-        Query query1 = query1Def.build( query2Def.call(query1Def.getArg1(), query1Def.getArg2()) );
-
-        Model model = new ModelImpl().addQuery( query2 ).addQuery( query1 );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-
-        KieSession ksession = kieBase.newKieSession();
-
-        ksession.insert( new Relationship( "A", "B" ) );
-        ksession.insert( new Relationship( "B", "C" ) );
-
-        QueryResults results = ksession.getQueryResults( "isRelatedTo1", "A", "B" );
-
-        assertThat(results.size()).isEqualTo(1);
-        assertThat(results.iterator().next().get(query1Def.getArg2().getName())).isEqualTo("B");
-    }
-
-    @Test
-    public void testQueryInvokingQuery2() {
-        final org.drools.model.Query2Def<java.lang.String, java.lang.String> queryDef_isRelatedTo2 = query("isRelatedTo2",
-                java.lang.String.class,
-                "x",
-                java.lang.String.class,
-                "y");
-
-        final org.drools.model.Query2Def<java.lang.String, java.lang.String> queryDef_isRelatedTo = query("isRelatedTo",
-                java.lang.String.class,
-                "x",
-                java.lang.String.class,
-                "y");
-
-        org.drools.model.Query isRelatedTo_build = queryDef_isRelatedTo.build(queryDef_isRelatedTo2.call(true,
-                queryDef_isRelatedTo.getArg1(),
-                queryDef_isRelatedTo.getArg2()));
-
-        final org.drools.model.Variable<Relationship> var_$pattern_Relationship$4$ = declarationOf(Relationship.class,
-                "$pattern_Relationship$4$");
-
-        org.drools.model.Query isRelatedTo2_build = queryDef_isRelatedTo2.build(
-                pattern(var_$pattern_Relationship$4$)
-                .expr("$expr$63$",
-                        queryDef_isRelatedTo2.getArg1(),
-                        (_this, x) -> EvaluationUtil.areNullSafeEquals(_this.getStart(),
-                                x),
-                        betaIndexedBy(java.lang.String.class,
-                                org.drools.model.Index.ConstraintType.EQUAL,
-                                0,
-                                _this -> _this.getStart(),
-                                x -> x),
-                        reactOn("start"))
-                .expr("$expr$64$",
-                        queryDef_isRelatedTo2.getArg2(),
-                        (_this, y) -> EvaluationUtil.areNullSafeEquals(_this.getEnd(),
-                                y),
-                        betaIndexedBy(java.lang.String.class,
-                                org.drools.model.Index.ConstraintType.EQUAL,
-                                1,
-                                _this -> _this.getEnd(),
-                                y -> y),
-                        reactOn("end")));
-
-        Model model = new ModelImpl().addQuery( isRelatedTo_build ).addQuery( isRelatedTo2_build );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-
-        KieSession ksession = kieBase.newKieSession();
-
-        ksession.insert( new Relationship( "A", "B" ) );
-        ksession.insert( new Relationship( "B", "C" ) );
-
-        QueryResults results = ksession.getQueryResults( "isRelatedTo", "A", "B" );
-
-        assertThat(results.size()).isEqualTo(1);
-        String paramName = ((QueryImpl ) ksession.getKieBase().getQuery("defaultpkg", "isRelatedTo" )).getParameters()[1].getIdentifier();
-        assertThat(results.iterator().next().get(paramName)).isEqualTo("B");
-    }
-
-    @Test
-    public void testNegatedAfter() throws Exception {
-        Variable<StockTick> var_$a = declarationOf(StockTick.class, "$a");
-        Variable<StockTick> var_$b = declarationOf(StockTick.class, "$b");
-
-        Rule rule = rule("R").build(
-                pattern(var_$a)
-                        .expr("$expr$1$",
-                                (_this) -> EvaluationUtil.areNullSafeEquals(_this.getCompany(), "DROO"),
-                                alphaIndexedBy(String.class, Index.ConstraintType.EQUAL, 0, _this -> _this.getCompany(), "DROO"),
-                                reactOn("company")),
-                pattern(var_$b)
-                        .expr("$expr$2$", (_this) -> EvaluationUtil.areNullSafeEquals(_this.getCompany(), "ACME"),
-                                alphaIndexedBy(String.class, Index.ConstraintType.EQUAL, 0, _this -> _this.getCompany(), "ACME"),
-                                reactOn("company"))
-                        .expr("$expr$3$",
-                                var_$a,
-                                not(after(5, java.util.concurrent.TimeUnit.SECONDS, 8, java.util.concurrent.TimeUnit.SECONDS))),
-                execute(() -> {
-                    System.out.println("fired");
-                }));
-
-        Model model = new ModelImpl().addRule(rule);
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel(model, EventProcessingOption.STREAM);
-
-        KieSessionConfiguration conf = KieServices.get().newKieSessionConfiguration();
-        conf.setOption( ClockTypeOption.get( ClockType.PSEUDO_CLOCK.getId() ) );
-
-        KieSession ksession = kieBase.newKieSession(conf, null);
-        SessionPseudoClock clock = ksession.getSessionClock();
-
-        ksession.insert( new StockTick( "DROO" ) );
-        clock.advanceTime( 6, TimeUnit.SECONDS );
-        ksession.insert( new StockTick( "ACME" ) );
-
-        assertThat(ksession.fireAllRules()).isEqualTo(0);
-
-        clock.advanceTime( 4, TimeUnit.SECONDS );
-        ksession.insert( new StockTick( "ACME" ) );
-
-        assertThat(ksession.fireAllRules()).isEqualTo(1);
-    }
-
-    @Test
-    public void testBreakingNamedConsequence() {
-        Variable<Result> resultV = declarationOf( Result.class );
-        Variable<Person> markV = declarationOf( Person.class );
-        Variable<Person> olderV = declarationOf( Person.class );
-
-        Rule rule = rule( "beta" )
-                .build(
-                        pattern( resultV ),
-                        pattern(markV)
-                                .expr("exprA", p -> p.getName().equals( "Mark" ),
-                                        alphaIndexedBy( String.class, Index.ConstraintType.EQUAL, 1, p -> p.getName(), "Mark" ),
-                                        reactOn( "name", "age" )),
-                        when("cond1", markV, p -> p.getAge() < 30).then(
-                                on(markV, resultV).breaking().execute((p, r) -> r.addValue( "Found young " + p.getName()))
-                        ).elseWhen("cond2", markV, p -> p.getAge() > 50).then(
-                                on(markV, resultV).breaking().execute((p, r) -> r.addValue( "Found old " + p.getName()))
-                        ).elseWhen().then(
-                                on(markV, resultV).breaking().execute((p, r) -> r.addValue( "Found " + p.getName()))
-                        ),
-                        pattern(olderV)
-                                .expr("exprB", p -> !p.getName().equals("Mark"),
-                                        alphaIndexedBy( String.class, Index.ConstraintType.NOT_EQUAL, 1, p -> p.getName(), "Mark" ),
-                                        reactOn( "name" ))
-                                .expr("exprC", markV, (p1, p2) -> p1.getAge() > p2.getAge(),
-                                        betaIndexedBy( int.class, Index.ConstraintType.GREATER_THAN, 0, p -> p.getAge(), p -> p.getAge() ),
-                                        reactOn( "age" )),
-                        on(olderV, markV, resultV).execute((p1, p2, r) -> r.addValue( p1.getName() + " is older than " + p2.getName()))
-                );
-
-        Model model = new ModelImpl().addRule( rule );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-        KieSession ksession = kieBase.newKieSession();
-
-        Result result = new Result();
-        ksession.insert( result );
-
-        ksession.insert( new Person( "Mark", 37 ) );
-        ksession.insert( new Person( "Edson", 35 ) );
-        ksession.insert( new Person( "Mario", 40 ) );
-        ksession.fireAllRules();
-
-        Collection<String> results = (Collection<String>)result.getValue();
-        assertThat(results.size()).isEqualTo(1);
-
-        assertThat(results.iterator().next()).isEqualTo("Found Mark");
-    }
-
-    @Test
-    public void testWatch() {
-        Variable<Person> var_$p = declarationOf(Person.class, "$p");
-
-        Rule rule = rule("R").build(
-                pattern(var_$p)
-                    .expr("$expr$1$", (_this) -> _this.getAge() < 50,
-                            alphaIndexedBy(int.class, Index.ConstraintType.LESS_THAN, 0, _this -> _this.getAge(), 50),
-                            reactOn("age"))
-                .watch("!age"),
-                on(var_$p).execute((drools, $p) -> {
-                    $p.setAge($p.getAge() + 1);
-                    drools.update($p, "age");
-                }));
-
-        Model model = new ModelImpl().addRule( rule );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-        KieSession ksession = kieBase.newKieSession();
-
-        Person p = new Person("Mario", 40);
-        ksession.insert( p );
-        ksession.fireAllRules();
-
-        assertThat(p.getAge()).isEqualTo(41);
-    }
-
-    @Test
-    public void testReactiveOOPath() {
-        Global<List> listG = globalOf(List.class, "defaultpkg", "list");
-        Variable<Man> manV = declarationOf( Man.class );
-        Variable<Woman> wifeV = declarationOf( Woman.class, reactiveFrom( manV, Man::getWife ) );
-        Variable<Child> childV = declarationOf( Child.class, reactiveFrom( wifeV, Woman::getChildren ) );
-        Variable<Toy> toyV = declarationOf( Toy.class, reactiveFrom( childV, Child::getToys ) );
-
-        Rule rule = rule( "oopath" )
-                .build(
-                        pattern(manV),
-                        pattern(wifeV),
-                        pattern(childV).expr("exprA", c -> c.getAge() > 10),
-                        pattern(toyV),
-                        on(toyV, listG).execute( (t, l) -> l.add(t.getName()) )
-                );
-
-        Model model = new ModelImpl().addGlobal( listG ).addRule( rule );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-        KieSession ksession = kieBase.newKieSession();
-
-        final List<String> list = new ArrayList<>();
-        ksession.setGlobal( "list", list );
-
-        final Woman alice = new Woman( "Alice", 38 );
-        final Man bob = new Man( "Bob", 40 );
-        bob.setWife( alice );
-
-        final Child charlie = new Child( "Charles", 12 );
-        final Child debbie = new Child( "Debbie", 10 );
-        alice.addChild( charlie );
-        alice.addChild( debbie );
-
-        charlie.addToy( new Toy( "car" ) );
-        charlie.addToy( new Toy( "ball" ) );
-        debbie.addToy( new Toy( "doll" ) );
-
-        ksession.insert( bob );
-        ksession.fireAllRules();
-
-        assertThat(list).containsExactlyInAnyOrder("car", "ball");
-
-        list.clear();
-        debbie.setAge( 11 );
-        ksession.fireAllRules();
-
-        assertThat(list).containsExactlyInAnyOrder("doll");
-    }
-
-    @Test
-    public void testAccumulateConstrainingValue() {
-        Variable<Person> var_$p = declarationOf(Person.class, "$p");
-        Variable<Integer> var_$expr$5$ = declarationOf(Integer.class, "$expr$5$");
-        Variable<java.lang.Integer> var_$sum = declarationOf(java.lang.Integer.class, "$sum");
-
-        Rule rule = rule("X").build(
-                accumulate(pattern(var_$p).expr("$expr$4$",
-                (_this) -> _this.getName()
-                        .startsWith("M"))
-                        .bind(var_$expr$5$,
-                                (_this) -> _this.getAge()),
-                accFunction(org.drools.core.base.accumulators.IntegerSumAccumulateFunction.class,
-                        var_$expr$5$).as(var_$sum)),
-                pattern(var_$sum).expr("$expr$3$",
-                        (_this) -> _this > 50),
-                on(var_$sum).execute((drools, $sum) -> {
-                    drools.insert(new Result($sum));
-                }));
-
-        Model model = new ModelImpl().addRule( rule );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-        KieSession ksession = kieBase.newKieSession();
-
-        ksession.insert(new Person("Mark", 37));
-        ksession.insert(new Person("Edson", 35));
-        ksession.insert(new Person("Mario", 40));
-
-        ksession.fireAllRules();
-
-        Collection<Result> results = getObjectsIntoList(ksession, Result.class);
-        assertThat(results.size()).isEqualTo(1);
-        assertThat(results.iterator().next().getValue()).isEqualTo(77);
-    }
-
-    @Test
-    public void testQueryWithDyanmicInsert() throws IOException, ClassNotFoundException {
-        org.drools.model.Global<java.util.List> var_list = globalOf(java.util.List.class,
-                "org.drools.compiler.test",
-                "list");
-
-        org.drools.model.Query3Def<Person, java.lang.String, Integer> queryDef_peeps = query("org.drools.compiler.test",
-                "peeps",
-                Person.class,
-                "$p",
-                java.lang.String.class,
-                "$name",
-                int.class,
-                "$age");
-
-        org.drools.model.Query peeps_build = queryDef_peeps.build(D.pattern(queryDef_peeps.getArg1(), D.from(queryDef_peeps.getArg2(), queryDef_peeps.getArg3(), ($name, $age) -> new Person($name, $age))));
-
-        final org.drools.model.Variable<java.lang.String> var_$n1 = D.declarationOf(java.lang.String.class,
-                "$n1");
-        final org.drools.model.Variable<Person> var_$pattern_Person$2$ = D.declarationOf(Person.class,
-                "$pattern_Person$2$");
-        final org.drools.model.Variable<Person> var_$p = D.declarationOf(Person.class,
-                "$p");
-        org.drools.model.Rule rule = D.rule("org.drools.compiler.test",
-                "x1").build(D.pattern(var_$n1),
-                D.not(D.pattern(var_$pattern_Person$2$).expr("$expr$2$",
-                        (_this) -> EvaluationUtil.areNullSafeEquals(_this.getName(),
-                                "darth"),
-                        D.alphaIndexedBy(java.lang.String.class,
-                                org.drools.model.Index.ConstraintType.EQUAL,
-                                0,
-                                _this -> _this.getName(),
-                                "darth"),
-                        D.reactOn("name"))),
-                queryDef_peeps.call(true,
-                        var_$p,
-                        var_$n1,
-                        D.valueOf(100)),
-                D.on(var_list,
-                        var_$p).execute((list, $p) -> {
-                    list.add($p);
-                }));
-
-        Model model = new ModelImpl().addRule( rule ).addQuery( peeps_build ).addGlobal( var_list );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model );
-        KieSession ksession = kieBase.newKieSession();
-
-        final List<Person> list = new ArrayList<>();
-        ksession.setGlobal("list", list);
-
-        final Person p1 = new Person("darth", 100);
-
-        ksession.insert("darth");
-        ksession.fireAllRules();
-        assertThat(list.size()).isEqualTo(1);
-        assertThat(list.get(0)).isEqualTo(p1);
-
-    }
-
-    @Test
-    public void testDynamicSalienceOnGlobal() {
-        Global<AtomicInteger> var_salience1 = D.globalOf(AtomicInteger.class, "defaultpkg", "salience1");
-        Global<AtomicInteger> var_salience2 = D.globalOf(AtomicInteger.class, "defaultpkg", "salience2");
-        Global<List> var_list = D.globalOf(List.class, "defaultpkg", "list");
-
-        Variable<Integer> var_$i = D.declarationOf(Integer.class, "$i");
-
-        Rule rule1 = D.rule("R1")
-                .attribute(Rule.Attribute.SALIENCE, supply( var_salience1, salience1 -> salience1.get() ))
-                .build(D.pattern(var_$i),
-                        D.on(var_$i,
-                                var_salience1,
-                                var_list).execute((drools, $i, salience1, list) -> {
-                            drools.delete($i);
-                            salience1.decrementAndGet();
-                            list.add(1);
-                        }));
-
-        Rule rule2 = D.rule("R2")
-                .attribute(Rule.Attribute.SALIENCE, supply( var_salience2, salience2 -> salience2.get() ))
-                .build(D.pattern(var_$i),
-                        D.on(var_$i,
-                                var_list,
-                                var_salience2).execute((drools, $i, list, salience2) -> {
-                            drools.delete($i);
-                            salience2.decrementAndGet();
-                            list.add(2);
-                        }));
-
-        Model model = new ModelImpl().addRule( rule1 ).addRule( rule2 ).addGlobal( var_salience1 ).addGlobal( var_salience2 ).addGlobal( var_list );
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel( model, EventProcessingOption.STREAM );
-        KieSession ksession = kieBase.newKieSession();
-        try {
-            final List<Integer> list = new ArrayList<>();
-            ksession.setGlobal("list", list);
-            ksession.setGlobal("salience1", new AtomicInteger(9));
-            ksession.setGlobal("salience2", new AtomicInteger(10));
-
-            for (int i = 0; i < 10; i++) {
-                ksession.insert(i);
-                ksession.fireAllRules();
-            }
-
-            assertThat(list).containsExactly(2, 1, 2, 1, 2, 1, 2, 1, 2, 1);
-        } finally {
-            ksession.dispose();
+    public void assertSessionHasProperties(String ruleString, Consumer<KieSession> kieSessionConsumer) {
+        if (testRunType.isExecutableModel()) {
+            KieSession ksession = getKieSession( ruleString );
+            kieSessionConsumer.accept(ksession);
+        } else {
+            assertAll(() -> {
+                        KieSession ksession = getKieSession( "dialect \"java\";\n" + ruleString);
+                        kieSessionConsumer.accept(ksession);
+                    },
+                    () -> {
+                        KieSession ksession = getKieSession( "dialect \"mvel\";\n" + ruleString);
+                        kieSessionConsumer.accept(ksession);
+                    });
         }
     }
 
     @Test
-    public void testDynamicSalienceOnDeclarations() {
-        Global<List> var_list = D.globalOf( List.class, "defaultpkg", "list" );
+    public void providedInstance() {
+        String str = "import " + Person.class.getCanonicalName() + ";\n" +
+             "import " + Map.class.getCanonicalName() + ";\n" +
+             "import java.util.Map;\n" +
+             "import java.util.HashMap;\n" +
+             "global Map results;\n" +
+             "rule X when\n" +
+             "  $groupedAges : Map() from accumulate(\n" +
+             "    Person($firstLetter : name.substring(0, 1), $age : age),\n" +
+             "    init( Map groupedAges = new HashMap(); ),\n" +
+             "    action( \n" +
+             "      Integer sum = (Integer) groupedAges.getOrDefault($firstLetter, 0);\n" +
+             "      groupedAges.put($firstLetter, sum + $age);\n" +
+             "    ),\n" +
+             "    result( groupedAges )\n" +
+             "  )\n" +
+             "  $entry : Map.Entry(value > 36) from $groupedAges.entrySet()\n" +
+             "then\n" +
+             "  results.put((String) $entry.getKey(), (Integer) $entry.getValue());\n" +
+             "end";
 
-        Variable<Integer> var_$i = D.declarationOf(Integer.class, "$i" );
-        Variable<String> var_$s = D.declarationOf(String.class, "$s");
+        assertSessionHasProperties(str, ksession -> {
+            Map<String, Integer> results = new HashMap<>();
+            ksession.setGlobal("results", results);
+    
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            FactHandle meFH = ksession.insert(new Person("Mario", 45));
+            ksession.insert(new Person("Maciej", 39));
+            ksession.insert(new Person("Edoardo", 33));
+            FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
 
-        Rule rule1 = D.rule("R1")
-                .attribute(Rule.Attribute.SALIENCE, supply(var_$s, s -> s.length()))
-                .build(D.pattern(var_$s),
-                        D.on(var_list,
-                                var_$s).execute((list, $s) -> {
-                            list.add($s);
-                        }));
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get("E")).isEqualTo(71);
+            assertThat(results.get("M")).isEqualTo(126);
+            results.clear();
 
-        Rule rule2 = D.rule("R2")
-                .attribute(Rule.Attribute.SALIENCE, supply(var_$i, i -> i))
-                .build(D.pattern(var_$i),
-                        D.on(var_$i,
-                                var_list).execute(($i, list) -> {
-                            list.add($i);
-                        }));
+            ksession.delete(meFH);
+            ksession.fireAllRules();
 
-        Model model = new ModelImpl().addRule( rule1 ).addRule( rule2 ).addGlobal( var_list );
-        KieSession ksession = KieBaseBuilder.createKieBaseFromModel( model ).newKieSession();
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get("M")).isEqualTo(81);
+            results.clear();
 
-        List<Object> list = new ArrayList<>();
-        ksession.setGlobal( "list", list );
+            ksession.update(geoffreyFH, new Person("Geoffrey", 40));
+            ksession.insert(new Person("Matteo", 38));
+            ksession.fireAllRules();
 
-        ksession.insert( "ok" );
-        ksession.insert( "test" );
-        ksession.insert( 3 );
-        ksession.insert( 1 );
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get("G")).isEqualTo(40);
+            assertThat(results.get("M")).isEqualTo(119);
+        });
+    }
+    @Test
+    public void testSumPersonAgeGroupByInitialWithAcc() {
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + GroupKey.class.getCanonicalName() + ";" +
+                "import " + Map.class.getCanonicalName() + ";" +
+                "import " + org.drools.core.base.accumulators.IntegerSumAccumulateFunction.class.getCanonicalName() + ";" +
+                "\n" +
+                "global Map results\n" +
+                "rule R1 when\n" +
+                "    Person($initial: name.substring(0,1))" +
+                "    not GroupKey(key == $initial)" +
+                "then\n" +
+                "    insert(new GroupKey(\"a\", $initial));\n" +
+                "end" +
+                "\n" +
+                "rule R2 when\n" +
+                "    $k: GroupKey(topic == \"a\", $key: key)" +
+                "    not Person($key == name.substring(0, 1))" +
+                "then\n" +
+                "    delete($k);\n" +
+                "end\n" +
+                "rule R3 when\n" +
+                "    GroupKey(topic == \"a\", $key: key)" +
+                "    accumulate($p: Person($age: age, $key == name.substring(0, 1)); $sumOfAges: sum($age); $sumOfAges > 10)" +
+                "then\n" +
+                "    results.put($key, $sumOfAges);\n" +
+                "end";
 
+        assertSessionHasProperties(str, ksession -> {
+            Map results = new HashMap();
+            ksession.setGlobal( "results", results );
+
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            FactHandle meFH = ksession.insert(new Person("Mario", 45));
+            ksession.insert(new Person("Maciej", 39));
+            ksession.insert(new Person("Edoardo", 33));
+            FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(3);
+            assertThat(results.get("G")).isEqualTo(35);
+            assertThat(results.get("E")).isEqualTo(71);
+            assertThat(results.get("M")).isEqualTo(126);
+            results.clear();
+
+            ksession.delete( meFH );
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get("M")).isEqualTo(81);
+            results.clear();
+
+            ksession.update(geoffreyFH, new Person("Geoffrey", 40));
+            ksession.insert(new Person("Matteo", 38));
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get("G")).isEqualTo(40);
+            assertThat(results.get("M")).isEqualTo(119);
+        });
+    }
+
+    @Test
+    public void testGroupPersonsInitial() {
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "\n" +
+                "global List results\n" +
+                "rule R1 when\n" +
+                "    groupby( $p: Person(); $key : $p.getName().substring(0, 1); count() )\n" +
+                "then\n" +
+                "    results.add($key);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+            List<String> results = new ArrayList<>();
+            ksession.setGlobal( "results", results );
+    
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            FactHandle meFH = ksession.insert(new Person("Mario", 45));
+            ksession.insert(new Person("Maciej", 39));
+            ksession.insert(new Person("Edoardo", 33));
+            FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
+            ksession.fireAllRules();
+    
+            assertThat(results.size()).isEqualTo(3);
+            assertThat(results)
+                    .containsExactlyInAnyOrder("G", "E", "M");
+            results.clear();
+    
+            ksession.delete( meFH );
+            ksession.fireAllRules();
+    
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results)
+                    .containsExactlyInAnyOrder("M");
+            results.clear();
+    
+            ksession.update(geoffreyFH, new Person("Geoffrey", 40));
+            ksession.insert(new Person("Matteo", 38));
+            ksession.fireAllRules();
+    
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results)
+                    .containsExactlyInAnyOrder("G", "M");
+        });
+    }
+
+    @Test
+    public void testSumPersonAgeGroupByInitial() {
+        // Note: this appears to be a duplicate of providedInstance
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Map.class.getCanonicalName() + ";" +
+                "global Map results;\n" +
+                "rule X when\n" +
+                "groupby( $p: Person (); " +
+                "$key : $p.getName().substring(0, 1); " +
+                "$sumOfAges : sum($p.getAge()); " +
+                "$sumOfAges > 36)" +
+                "then\n" +
+                "  results.put($key, $sumOfAges);\n" +
+                "end";
+        assertSessionHasProperties(str, ksession -> {
+
+        Map results = new HashMap();
+        ksession.setGlobal( "results", results );
+
+        ksession.insert(new Person("Mark", 42));
+        ksession.insert(new Person("Edson", 38));
+        FactHandle meFH = ksession.insert(new Person("Mario", 45));
+        ksession.insert(new Person("Maciej", 39));
+        ksession.insert(new Person("Edoardo", 33));
+        FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
         ksession.fireAllRules();
-        assertThat(list).containsExactly("test", 3, "ok", 1);
+
+        assertThat(results.size()).isEqualTo(2);
+        assertThat(results.get("E")).isEqualTo(71);
+        assertThat(results.get("M")).isEqualTo(126);
+        results.clear();
+
+        ksession.delete( meFH );
+        ksession.fireAllRules();
+
+        assertThat(results.size()).isEqualTo(1);
+        assertThat(results.get("M")).isEqualTo(81);
+        results.clear();
+
+        ksession.update(geoffreyFH, new Person("Geoffrey", 40));
+        ksession.insert(new Person("Matteo", 38));
+        ksession.fireAllRules();
+
+        assertThat(results.size()).isEqualTo(2);
+        assertThat(results.get("G")).isEqualTo(40);
+        assertThat(results.get("M")).isEqualTo(119);
+        });
     }
 
     @Test
-    public void testAfterOnLongFields() throws Exception {
-        Variable<StockTick> var_$a = declarationOf(StockTick.class, "$a");
-        Variable<StockTick> var_$b = declarationOf(StockTick.class, "$b");
+    public void testSumPersonAgeGroupByInitialWithBetaFilter() {
+        // TODO: For some reason, the compiled class expression thinks $p should be an integer?
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Map.class.getCanonicalName() + ";" +
+                "global Map results;\n" +
+                "rule X when\n" +
+                "groupby( $p: Person ( $age: age ); " +
+                "$key : $p.getName().substring(0, 1); " +
+                "$sum : sum($age); " +
+                "$sum > $key.length())" +
+                "then\n" +
+                "  results.put($key, $sum);\n" +
+                "end";
 
-        Rule rule = rule("R").build(
-                pattern(var_$a)
-                        .expr("$expr$1$",
-                                (_this) -> EvaluationUtil.areNullSafeEquals(_this.getCompany(), "DROO"),
-                                alphaIndexedBy(String.class, Index.ConstraintType.EQUAL, 0, _this -> _this.getCompany(), "DROO"),
-                                reactOn("company")),
-                pattern(var_$b)
-                        .expr("$expr$2$", (_this) -> EvaluationUtil.areNullSafeEquals(_this.getCompany(), "ACME"),
-                                alphaIndexedBy(String.class, Index.ConstraintType.EQUAL, 0, _this -> _this.getCompany(), "ACME"),
-                                reactOn("company"))
-                        .expr("$expr$3$",
-                                _this -> _this.getTimeFieldAsLong(),
-                                var_$a,
-                                $a -> $a.getTimeFieldAsLong(),
-                                after(5, java.util.concurrent.TimeUnit.MILLISECONDS, 8, java.util.concurrent.TimeUnit.MILLISECONDS)),
-                execute(() -> {
-                    System.out.println("fired");
-                }));
+        assertSessionHasProperties(str, ksession -> {
 
-        Model model = new ModelImpl().addRule(rule);
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel(model, EventProcessingOption.STREAM);
+            Map results = new HashMap();
+            ksession.setGlobal("results", results);
 
-        KieSessionConfiguration conf = KieServices.get().newKieSessionConfiguration();
-        conf.setOption( ClockTypeOption.get( ClockType.PSEUDO_CLOCK.getId() ) );
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            FactHandle meFH = ksession.insert(new Person("Mario", 45));
+            ksession.insert(new Person("Maciej", 39));
+            ksession.insert(new Person("Edoardo", 33));
+            FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
+            ksession.fireAllRules();
 
-        KieSession ksession = kieBase.newKieSession(conf, null);
-        SessionPseudoClock clock = ksession.getSessionClock();
+            assertThat(results.size()).isEqualTo(3);
+            assertThat(results.get("G")).isEqualTo(35);
+            assertThat(results.get("E")).isEqualTo(71);
+            assertThat(results.get("M")).isEqualTo(126);
+            results.clear();
 
-        ksession.insert( new StockTick( "DROO" ).setTimeField( 0 ) );
-        clock.advanceTime( 6, TimeUnit.MILLISECONDS );
-        ksession.insert( new StockTick( "ACME" ).setTimeField( 6 ) );
+            ksession.delete(meFH);
+            ksession.fireAllRules();
 
-        assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get("M")).isEqualTo(81);
+            results.clear();
 
-        clock.advanceTime( 4, TimeUnit.MILLISECONDS );
-        ksession.insert( new StockTick( "ACME" ).setTimeField( 10 ) );
+            ksession.update(geoffreyFH, new Person("Geoffrey", 40));
+            ksession.insert(new Person("Matteo", 38));
+            ksession.fireAllRules();
 
-        assertThat(ksession.fireAllRules()).isEqualTo(0);
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get("G")).isEqualTo(40);
+            assertThat(results.get("M")).isEqualTo(119);
+        });
     }
 
     @Test
-    public void testAfterWithAnd() throws Exception {
-        Variable<StockTick> var_$a = declarationOf(StockTick.class, "$a");
-        Variable<StockTick> var_$b = declarationOf(StockTick.class, "$b");
+    public void testSumPersonAgeGroupByInitialWithExists() {
+        // TODO: For some reason, the compiled class expression thinks $p should be an integer?
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Map.class.getCanonicalName() + ";" +
+                "global Map results;\n" +
+                "rule X when\n" +
+                "groupby( $p: Person ( $age : age, $initial : getName().substring(0, 1) ) " +
+                "and exists( String( this == $initial ) ); " +
+                "$key : $p.getName().substring(0, 1); " +
+                "$sum : sum($age); " +
+                "$sum > 10)" +
+                "then\n" +
+                "  results.put($key, $sum);\n" +
+                "end";
 
-        Rule rule = rule("R").build(
-                pattern(var_$a).expr("$expr$3$",
-                (_this) -> EvaluationUtil.areNullSafeEquals(_this.getCompany(), "DROO"),
-                alphaIndexedBy(java.lang.String.class,
-                        org.drools.model.Index.ConstraintType.EQUAL,
-                        0,
-                        _this -> _this.getCompany(),
-                        "DROO"),
-                reactOn("company")),
-                pattern(var_$b).and().expr("$expr$5$",
-                        (_this) -> EvaluationUtil.areNullSafeEquals(_this.getCompany(), "ACME"),
-                        alphaIndexedBy(java.lang.String.class,
-                                org.drools.model.Index.ConstraintType.EQUAL,
-                                0,
-                                _this -> _this.getCompany(),
-                                "ACME"),
-                        reactOn("company"))
-                        .expr("$expr$6$",
-                                var_$a,
-                                after(5L,
-                                        java.util.concurrent.TimeUnit.SECONDS,
-                                        8L,
-                                        java.util.concurrent.TimeUnit.SECONDS)).endAnd(),
-                execute(() -> {
-                    System.out.println("fired");
-                }));
+        assertSessionHasProperties(str, ksession -> {
 
+            Map results = new HashMap();
+            ksession.setGlobal("results", results);
 
-        Model model = new ModelImpl().addRule(rule);
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel(model, EventProcessingOption.STREAM);
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            FactHandle meFH = ksession.insert(new Person("Mario", 45));
+            ksession.insert(new Person("Maciej", 39));
+            ksession.insert(new Person("Edoardo", 33));
+            FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
 
-        KieSessionConfiguration conf = KieServices.get().newKieSessionConfiguration();
-        conf.setOption( ClockTypeOption.get( ClockType.PSEUDO_CLOCK.getId() ) );
+            ksession.insert("G");
+            ksession.insert("M");
+            ksession.insert("X");
 
-        KieSession ksession = kieBase.newKieSession(conf, null);
-        SessionPseudoClock clock = ksession.getSessionClock();
+            ksession.fireAllRules();
 
-        ksession.insert( new StockTick( "DROO" ) );
-        clock.advanceTime( 6, TimeUnit.SECONDS );
-        ksession.insert( new StockTick( "ACME" ) );
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get("G")).isEqualTo(35);
+            assertThat(results.get("E")).isNull();
+            assertThat(results.get("M")).isEqualTo(126);
+            results.clear();
 
-        assertThat(ksession.fireAllRules()).isEqualTo(1);
+            ksession.delete(meFH);
+            ksession.fireAllRules();
 
-        clock.advanceTime( 4, TimeUnit.SECONDS );
-        ksession.insert( new StockTick( "ACME" ) );
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get("M")).isEqualTo(81);
+            results.clear();
 
-        assertThat(ksession.fireAllRules()).isEqualTo(0);
+            ksession.update(geoffreyFH, new Person("Geoffrey", 40));
+            ksession.insert(new Person("Matteo", 38));
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get("G")).isEqualTo(40);
+            assertThat(results.get("M")).isEqualTo(119);
+        });
+    }
+
+    public static final class MyType {
+
+        private final AtomicInteger counter;
+        private final MyType nested;
+
+        public MyType(AtomicInteger counter, MyType nested) {
+            this.counter = counter;
+            this.nested = nested;
+        }
+
+        public MyType getNested() {
+            counter.getAndIncrement();
+            return nested;
+        }
     }
 
     @Test
-    public void testTwoAccumulatesWithVarBindingModel() {
-        Variable<Person> a = PatternDSL.declarationOf(Person.class);
-        Variable<Pair> accSource = PatternDSL.declarationOf(Pair.class);
-        Variable<Collection> accResult = PatternDSL.declarationOf(Collection.class);
-        Variable<Collection> accResult2 = PatternDSL.declarationOf(Collection.class);
-        Variable<Pair> wrapped = PatternDSL.declarationOf(Pair.class, PatternDSL.from(accResult));
-        Variable<Object> unwrapped1 = PatternDSL.declarationOf(Object.class);
+    public void testWithNull() {
+        String str =
+                "import " + MyType.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "import " + AtomicInteger.class.getCanonicalName() + ";" +
+                "global List result;\n" +
+                "global AtomicInteger mappingFunctionCallCounter;\n" +
+                "rule X when\n" +
+                "groupby( $p: MyType ( nested != null ) ;" +
+                "$key : $p.getNested(); " +
+                "$count : count())" +
+                "then\n" +
+                "  result.add($key);\n" +
+                "end";
 
-        PatternDSL.PatternDef aPattern = PatternDSL.pattern(a)
-                .bind(accSource, v -> Pair.create(v.getName(), v.getAge()));
-        ViewItem accumulate = PatternDSL.accumulate(aPattern, DSL.accFunction( CollectSetAccumulateFunction::new, accSource).as(accResult));
+        assertSessionHasProperties(str, ksession -> {
+            AtomicInteger mappingFunctionCallCounter = new AtomicInteger();
+            List<Object> result = new ArrayList<>();
+            ksession.setGlobal("mappingFunctionCallCounter", mappingFunctionCallCounter);
+            ksession.setGlobal("result", result);
 
-        PatternDSL.PatternDef secondPattern = PatternDSL.pattern(accResult);
-        PatternDSL.PatternDef thirdPattern =
-              PatternDSL.pattern(wrapped).bind(unwrapped1, Pair::getKey); // If binding removed, test will pass.
-        ViewItem accumulate2 = PatternDSL.accumulate(PatternDSL.and(secondPattern, thirdPattern),
-                DSL.accFunction(CollectSetAccumulateFunction::new, wrapped).as(accResult2));
-        Rule rule = PatternDSL.rule("R")
-                .build(accumulate, accumulate2, PatternDSL.on(accResult2).execute(obj -> {
-                    boolean works = obj.contains(Pair.create("Lukas", 35));
-                    if (!works) {
-                        throw new IllegalStateException("Why is " + obj + " not Set<" + Pair.class + ">?");
+            MyType objectWithoutNestedObject = new MyType(mappingFunctionCallCounter, null);
+            MyType objectWithNestedObject = new MyType(mappingFunctionCallCounter, objectWithoutNestedObject);
+            ksession.insert(objectWithNestedObject);
+            ksession.insert(objectWithoutNestedObject);
+            ksession.fireAllRules();
+
+            // Side issue: this number is unusually high. Perhaps we should try to implement some cache for this?
+            System.out.println("GroupKey mapping function was called " + mappingFunctionCallCounter.get() + " times.");
+
+            assertThat(result).containsOnly(objectWithoutNestedObject);
+        });
+    }
+
+    @Test
+    public void testWithGroupByAfterExists() {
+        String str =
+                "import " + Map.class.getCanonicalName() + ";" +
+                "import " + Math.class.getCanonicalName() + ";" +
+                "global Map glob;\n" +
+                "rule X when\n" +
+                "groupby($i: Integer() and exists String();\n" +
+                "$key : Math.abs($i); " +
+                "$count : count())" +
+                "then\n" +
+                "  glob.put($key, $count.intValue());\n" +
+                "end";
+
+        assertSessionHasProperties(str, session -> {
+            Map<Integer, Integer> global = new HashMap<>();
+            session.setGlobal("glob", global);
+
+            session.insert("Something");
+            session.insert(-1);
+            session.insert(1);
+            session.insert(2);
+            session.fireAllRules();
+
+            assertThat(global.size()).isEqualTo(2);
+            assertThat((int) global.get(1)).isEqualTo(2); // -1 and 1 will map to the same key, and count twice.
+            assertThat((int) global.get(2)).isEqualTo(1); // 2 maps to a key, and counts once.
+        });
+    }
+
+    @Test
+    public void testWithGroupByAfterExistsWithFrom() {
+        // Note: this looks exactly the same as testWithGroupByAfterExists
+        String str =
+                "import " + Map.class.getCanonicalName() + ";" +
+                "import " + Math.class.getCanonicalName() + ";" +
+                "global Map glob;\n" +
+                "rule X when\n" +
+                "groupby($i: Integer() and exists String();\n" +
+                "$key : Math.abs($i); " +
+                "$count : count())" +
+                "then\n" +
+                "  glob.put($key, $count.intValue());\n" +
+                "end";
+
+        assertSessionHasProperties(str, session -> {
+            Map<Integer, Integer> global = new HashMap<>();
+            session.setGlobal("glob", global);
+
+            session.insert("Something");
+            session.insert(-1);
+            session.insert(1);
+            session.insert(2);
+            session.fireAllRules();
+
+            assertThat(global.size()).isEqualTo(2);
+            assertThat((int) global.get(1)).isEqualTo(2); // -1 and 1 will map to the same key, and count twice.
+            assertThat((int) global.get(2)).isEqualTo(1); // 2 maps to a key, and counts once.
+        });
+    }
+
+    @Test
+    public void testGroupBy2Vars() {
+        // TODO: For some reason, the compiled class expression thinks $p should be an integer?
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Map.class.getCanonicalName() + ";" +
+                "global Map results;\n" +
+                "rule X when\n" +
+                "groupby ( $p : Person ( $age : age ) and $s : String( $l : length );\n" +
+                "          $key : $p.getName().substring(0, 1) + $l;\n" +
+                "          $sum : sum( $age ); $sum > 10 )" +
+                "then\n" +
+                "  results.put($key, $sum);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            Map results = new HashMap();
+            ksession.setGlobal("results", results);
+
+            ksession.insert("test");
+            ksession.insert("check");
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            FactHandle meFH = ksession.insert(new Person("Mario", 45));
+            ksession.insert(new Person("Maciej", 39));
+            ksession.insert(new Person("Edoardo", 33));
+            FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(6);
+            assertThat(results.get("G4")).isEqualTo(35);
+            assertThat(results.get("E4")).isEqualTo(71);
+            assertThat(results.get("M4")).isEqualTo(126);
+            assertThat(results.get("G5")).isEqualTo(35);
+            assertThat(results.get("E5")).isEqualTo(71);
+            assertThat(results.get("M5")).isEqualTo(126);
+            results.clear();
+
+            ksession.delete(meFH);
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get("M4")).isEqualTo(81);
+            assertThat(results.get("M5")).isEqualTo(81);
+            results.clear();
+
+            ksession.update(geoffreyFH, new Person("Geoffrey", 40));
+            ksession.insert(new Person("Matteo", 38));
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(4);
+            assertThat(results.get("G4")).isEqualTo(40);
+            assertThat(results.get("M4")).isEqualTo(119);
+            assertThat(results.get("G5")).isEqualTo(40);
+            assertThat(results.get("M5")).isEqualTo(119);
+        });
+    }
+
+    @Test
+    public void testUnexpectedRuleMatch() {
+        String str =
+                "import " + Parent.class.getCanonicalName() + ";" +
+                "import " + Child.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "import " + Arrays.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        $a: Parent() and exists Child($a.getChild() == this);" +
+                "        $child: $a.getChild();" +
+                "        $count: count()" +
+                "    )" +
+                "then\n" +
+                "  results.add(Arrays.asList($child, $count));\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            List results = new ArrayList();
+            ksession.setGlobal("results", results);
+
+            Child child1 = new Child("Child1", 1);
+            Parent parent1 = new Parent("Parent1", child1);
+            Child child2 = new Child("Child2", 2);
+            Parent parent2 = new Parent("Parent2", child2);
+
+            ksession.insert(parent1);
+            ksession.insert(parent2);
+            FactHandle toRemove = ksession.insert(child1);
+            ksession.insert(child2);
+
+            // Remove child1, therefore it does not exist, therefore there should be no groupBy matches for the child.
+            ksession.delete(toRemove);
+
+            // Yet, we still get (Child1, 0).
+            ksession.fireAllRules();
+            assertThat(results)
+                    .containsOnly(Arrays.asList(child2, 1L));
+        });
+    }
+
+    @Test
+    public void testCompositeKey() {
+        // TODO: For some reason, the compiled class expression thinks $p should be an integer?
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + CompositeKey.class.getCanonicalName() + ";" +
+                "import " + Map.class.getCanonicalName() + ";" +
+                "global Map results;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        $p : Person ( $age : age );" +
+                "        $key : new CompositeKey( $p.getName().substring(0, 1), 1 );" +
+                "        $sum : sum( $age );" +
+                "        $sum > 10" +
+                "    )\n" +
+                "    $key1: Object() from $key.getKey1()" +
+                "then\n" +
+                "  results.put($key1, $sum);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+            Map results = new HashMap();
+            ksession.setGlobal("results", results);
+
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            FactHandle meFH = ksession.insert(new Person("Mario", 45));
+            ksession.insert(new Person("Maciej", 39));
+            ksession.insert(new Person("Edoardo", 33));
+            FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(3);
+            assertThat(results.get("G")).isEqualTo(35);
+            assertThat(results.get("E")).isEqualTo(71);
+            assertThat(results.get("M")).isEqualTo(126);
+            results.clear();
+
+            ksession.delete(meFH);
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get("M")).isEqualTo(81);
+            results.clear();
+
+            ksession.update(geoffreyFH, new Person("Geoffrey", 40));
+            ksession.insert(new Person("Matteo", 38));
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get("G")).isEqualTo(40);
+            assertThat(results.get("M")).isEqualTo(119);
+        });
+    }
+
+    public static class CompositeKey {
+        public final Object key1;
+        public final Object key2;
+
+        public CompositeKey( Object key1, Object key2 ) {
+            this.key1 = key1;
+            this.key2 = key2;
+        }
+
+        public Object getKey1() {
+            return key1;
+        }
+
+        public Object getKey2() {
+            return key2;
+        }
+
+        @Override
+        public boolean equals( Object o ) {
+            if ( this == o ) return true;
+            if ( o == null || getClass() != o.getClass() ) return false;
+            CompositeKey that = ( CompositeKey ) o;
+            return Objects.equals( key1, that.key1 ) &&
+                   Objects.equals( key2, that.key2 );
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash( key1, key2 );
+        }
+
+        @Override
+        public String toString() {
+            return "CompositeKey{" +
+                   "key1=" + key1 +
+                   ", key2=" + key2 +
+                   '}';
+        }
+    }
+
+    @Test
+    public void testTwoExpressionsOnSecondPattern() {
+        // DROOLS-5704
+        // TODO: For some reason, the compiled class expression thinks $p should be an integer?
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Set.class.getCanonicalName() + ";" +
+                "global Set results;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        $p1 : Person ( $age1 : age ) and $p2 : Person ( $age2 : age, $age1 > $age2);" +
+                "        $key : $age1 + $age2;" +
+                "        count()" +
+                "    )\n" +
+                "then\n" +
+                "  results.add($key);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            Set<Integer> results = new LinkedHashSet<>();
+            ksession.setGlobal("results", results);
+
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            ksession.insert(new Person("Edoardo", 33));
+            ksession.fireAllRules();
+
+            assertThat(results).contains(80, 75, 71);
+        });
+    }
+
+    @Test
+    public void testFromAfterGroupBy() {
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Set.class.getCanonicalName() + ";" +
+                "import " + Consumer.class.getCanonicalName() + ";" +
+                "global Set results;\n" +
+                "global Consumer typeChecker;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        $p : Person ( name != null );" +
+                "        $key : $p.getName();" +
+                "        $count : count()" +
+                "    )\n" +
+                "    $remappedKey: Object() from $key\n" +
+                "    $remappedCount: Long() from $count\n" +
+                "then\n" +
+                "    typeChecker.accept($remappedKey);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            Set<Integer> results = new LinkedHashSet<>();
+            ksession.setGlobal("results", results);
+            ksession.setGlobal("typeChecker", (Consumer) ($remappedKey -> {
+                if (!($remappedKey instanceof String)) {
+                    throw new IllegalStateException( "Name not String, but " + $remappedKey.getClass() );
+                }
+            }));
+
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            ksession.insert(new Person("Edoardo", 33));
+            int fireCount = ksession.fireAllRules();
+            assertThat(fireCount).isGreaterThan(0);
+        });
+    }
+
+    @Test
+    public void testBindingRemappedAfterGroupBy() {
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Set.class.getCanonicalName() + ";" +
+                "import " + Consumer.class.getCanonicalName() + ";" +
+                "global Set results;\n" +
+                "global Consumer typeChecker;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        $p : Person ( name != null );" +
+                "        $key : $p.getName();" +
+                "        $count : count()" +
+                "    )\n" +
+                "    $remappedKey: Object() from $key\n" +
+                "    $remappedCount: Long() from $count\n" +
+                "then\n" +
+                "    typeChecker.accept($remappedKey);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            Set<Integer> results = new LinkedHashSet<>();
+            ksession.setGlobal("results", results);
+            ksession.setGlobal("typeChecker", (Consumer) ($remappedKey -> {
+                if (!($remappedKey instanceof String)) {
+                    throw new IllegalStateException( "Name not String, but " + $remappedKey.getClass() );
+                }
+            }));
+
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            ksession.insert(new Person("Edoardo", 33));
+            int fireCount = ksession.fireAllRules();
+            assertThat(fireCount).isGreaterThan(0);
+        });
+    }
+
+    @Test
+    public void testGroupByUpdatingKey() {
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Map.class.getCanonicalName() + ";" +
+                "global Map results;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        $p : Person ();" +
+                "        $key : $p.getName().substring(0, 1);" +
+                "        $sumOfAges : sum($p.getAge()), $countOfPersons : count();" +
+                "        $sumOfAges > 10" +
+                "    )\n" +
+                "then\n" +
+                "    results.put($key, $sumOfAges + $countOfPersons.intValue());" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+            Map results = new HashMap();
+            ksession.setGlobal("results", results);
+
+            Person me = new Person("Mario", 45);
+            FactHandle meFH = ksession.insert(me);
+
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            ksession.insert(new Person("Maciej", 39));
+            ksession.insert(new Person("Edoardo", 33));
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get("E")).isEqualTo(73);
+            assertThat(results.get("M")).isEqualTo(129);
+            results.clear();
+
+            me.setName("EMario");
+            ksession.update(meFH, me);
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get("E")).isEqualTo(119);
+            assertThat(results.get("M")).isEqualTo(83);
+        });
+    }
+
+    @Test
+    public void doesNotRemoveProperly() {
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Set.class.getCanonicalName() + ";" +
+                "global Set results;\n" +
+                "rule R1 when\n" +
+                "    groupby(" +
+                "        $p : Person (name != null);" +
+                "        $key : $p.getAge();" +
+                "        count()" +
+                "    )\n" +
+                "then\n" +
+                "    results.add($key);" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            Set<Integer> results = new LinkedHashSet<>();
+
+            ((RuleEventManager) ksession).addEventListener(new RuleEventListener() {
+                @Override
+                public void onDeleteMatch(Match match) {
+                    if (!match.getRule().getName().equals("R1")) {
+                        return;
                     }
-                }));
+                    RuleTerminalNodeLeftTuple tuple = (RuleTerminalNodeLeftTuple) match;
+                    InternalFactHandle handle = tuple.getFactHandle();
+                    Object[] array = (Object[]) handle.getObject();
+                    results.remove(array[array.length - 1]);
+                }
 
-        Model model = new ModelImpl().addRule(rule);
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel(model);
-        KieSession session = kieBase.newKieSession();
+                @Override
+                public void onUpdateMatch(Match match) {
+                    onDeleteMatch(match);
+                }
+            });
+            ksession.setGlobal("results", results);
 
-        session.insert(new Person("Lukas", 35));
-        session.fireAllRules();
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edson", 38));
+            int edoardoAge = 33;
+            FactHandle fh1 = ksession.insert(new Person("Edoardo", edoardoAge));
+            FactHandle fh2 = ksession.insert(new Person("Edoardo's clone", edoardoAge));
+            ksession.fireAllRules();
+            assertThat(results).contains(edoardoAge);
+
+            // Remove first Edoardo. Nothing should happen, because age 33 is still present.
+            ksession.delete(fh1);
+            ksession.fireAllRules();
+            assertThat(results).contains(edoardoAge);
+
+            // Remove Edoardo's clone. The group for age 33 should be undone.
+            ksession.delete(fh2);
+            ksession.fireAllRules();
+            System.out.println(results);
+            assertThat(results).doesNotContain(edoardoAge);
+        });
     }
 
     @Test
-    public void testBetaIndexOn2ValuesOnLeftTuple() {
-        final Variable<Integer> var_$integer = D.declarationOf(Integer.class);
-        final Variable<Integer> var_$i = D.declarationOf(Integer.class);
-        final Variable<String> var_$string = D.declarationOf(String.class);
-        final Variable<Integer> var_$l = D.declarationOf(Integer.class);
-        final Variable<Person> var_$p = D.declarationOf(Person.class);
+    public void testTwoGroupBy() {
+        // DROOLS-5697
+        // TODO: For some reason, the compiled class expression thinks $p should be an integer?
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Group.class.getCanonicalName() + ";" +
+                "import " + Map.class.getCanonicalName() + ";" +
+                "global Map results;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        groupby(" +
+                "            $p : Person ($age: age);" +
+                "            $key1 : $p.getName().substring(0, 3);" +
+                "            $sumOfAges : sum($age)" +
+                "        ) and $g1: Group() from new Group($key1, $sumOfAges) and " +
+                "        $g1SumOfAges: Integer() from $g1.getValue();" +
+                "        $key : ((String) ($g1.getKey())).substring(0, 2);" +
+                "        $maxOfValues : max($g1SumOfAges)" +
+                "    )\n" +
+                "then\n" +
+                "    System.out.println($key + \" -> \" + $maxOfValues);\n" +
+                "    results.put($key, $maxOfValues);\n" +
+                "end";
 
-        Rule rule = D.rule("R1").build(D.pattern(var_$integer).bind(var_$i,
-                (Integer _this) -> _this),
-                D.pattern(var_$string).bind(var_$l,
-                        (String _this) -> _this.length()),
-                D.pattern(var_$p).expr("8EF302358D7EE770A4D874DF4B3327D2",
-                        var_$l,
-                        var_$i,
-                        (_this, $l, $i) -> EvaluationUtil.areNumbersNullSafeEquals(_this.getAge(), $l + $i),
-                        D.betaIndexedBy(int.class, Index.ConstraintType.EQUAL, 3, Person::getAge, ($l, $i) -> $l + $i, int.class),
-                        D.reactOn("age")),
-                D.execute(() -> { })
-        );
+        assertSessionHasProperties(str, ksession -> {
 
-        Model model = new ModelImpl().addRule(rule);
-        KieBase kieBase = KieBaseBuilder.createKieBaseFromModel(model, EventProcessingOption.STREAM);
-        KieSession ksession = kieBase.newKieSession();
+            Map results = new HashMap();
+            ksession.setGlobal("results", results);
 
-        ksession.insert( 5 );
-        ksession.insert( "test" );
-        ksession.insert( new Person("Sofia", 9) );
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edoardo", 33));
+            FactHandle meFH = ksession.insert(new Person("Mario", 45));
+            ksession.insert(new Person("Maciej", 39));
+            ksession.insert(new Person("Edson", 38));
+            FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
+            ksession.fireAllRules();
+            System.out.println("-----");
 
-        assertThat(ksession.fireAllRules()).isEqualTo(1);
+            /*
+             * In the first groupBy:
+             *   Mark+Mario become "(Mar, 87)"
+             *   Maciej becomes "(Mac, 39)"
+             *   Geoffrey becomes "(Geo, 35)"
+             *   Edson becomes "(Eds, 38)"
+             *   Edoardo becomes "(Edo, 33)"
+             *
+             * Then in the second groupBy:
+             *   "(Mar, 87)" and "(Mac, 39)" become "(Ma, 87)"
+             *   "(Eds, 38)" and "(Edo, 33)" become "(Ed, 38)"
+             *   "(Geo, 35)" becomes "(Ge, 35)"
+             */
+
+            assertThat(results.size()).isEqualTo(3);
+            assertThat(results.get("Ma")).isEqualTo(87);
+            assertThat(results.get("Ed")).isEqualTo(38);
+            assertThat(results.get("Ge")).isEqualTo(35);
+            results.clear();
+
+            ksession.delete(meFH);
+            ksession.fireAllRules();
+            System.out.println("-----");
+
+            // No Mario anymore, so "(Mar, 42)" instead of "(Mar, 87)".
+            // Therefore "(Ma, 42)".
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get("Ma")).isEqualTo(42);
+            results.clear();
+
+            // "(Geo, 35)" is gone.
+            // "(Mat, 38)" is added, but Mark still wins, so "(Ma, 42)" stays.
+            ksession.delete(geoffreyFH);
+            ksession.insert(new Person("Matteo", 38));
+            ksession.fireAllRules();
+
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get("Ma")).isEqualTo(42);
+        });
     }
 
     @Test
-    public void testPatternsAfterAccMovedToEvalsOnResultPattern() throws Exception {
-        final Global<List> var_results = D.globalOf(List.class, "defaultpkg", "results");
+    public void testTwoGroupByUsingBindings() {
+        // DROOLS-5697
+        // TODO: For some reason, the compiled class expression thinks $p should be an integer?
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Group.class.getCanonicalName() + ";" +
+                "import " + Map.class.getCanonicalName() + ";" +
+                "global Map results;\n" +
+                "rule R1 when\n" +
+                "    groupby(" +
+                "        groupby(" +
+                "            $p : Person ($age: age);" +
+                "            $key1 : $p.getName().substring(0, 3);" +
+                "            $sumOfAges : sum($age)" +
+                "        ) and $g1: Group() from new Group($key1, $sumOfAges) and " +
+                "        $g1SumOfAges: Integer() from $g1.getValue();" +
+                "        $key : ((String) ($g1.getKey())).substring(0, 2);" +
+                "        $maxOfValues : max($g1SumOfAges)" +
+                "    )\n" +
+                "then\n" +
+                "    System.out.println($key + \" -> \" + $maxOfValues);\n" +
+                "    results.put($key, $maxOfValues);\n" +
+                "end";
 
-        final Variable<String> var_$key = D.declarationOf(String.class);
-        final Variable<Person> var_$p   = D.declarationOf(Person.class);
-        Variable<Integer> var_$age = D.declarationOf(Integer.class);
-        Variable<Integer> var_$sumOfAges = D.declarationOf(Integer.class);
-        Variable<Long> var_$countOfPersons = D.declarationOf(Long.class);
+        assertSessionHasProperties(str, ksession -> {
 
-        Predicate1<Integer> p1 =  a -> a > 0;
-        Predicate1<Long> p2 =  c -> c > 0;
+            Map results = new HashMap();
+            ksession.setGlobal("results", results);
 
-        Rule rule1 = D.rule("R1").build(
-                D.accumulate(
-                        // Patterns
-                        D.pattern(var_$p).bind(var_$age, person -> person.getAge(), D.reactOn("age")),
-                        D.accFunction(org.drools.core.base.accumulators.IntegerSumAccumulateFunction::new, var_$age).as(var_$sumOfAges),
-                        D.accFunction(org.drools.core.base.accumulators.CountAccumulateFunction::new).as(var_$countOfPersons)),
-                // Filter
-                D.pattern(var_$sumOfAges).expr(p1),
-                D.pattern(var_$countOfPersons).expr(p2),
-                // Consequence
-                D.on(var_$sumOfAges, var_$countOfPersons, var_results)
-                        .execute(($ages, $counts, results) -> results.add($ages + ":" + $counts)));
+            ksession.insert(new Person("Mark", 42));
+            ksession.insert(new Person("Edoardo", 33));
+            FactHandle meFH = ksession.insert(new Person("Mario", 45));
+            ksession.insert(new Person("Maciej", 39));
+            ksession.insert(new Person("Edson", 38));
+            FactHandle geoffreyFH = ksession.insert(new Person("Geoffrey", 35));
+            ksession.fireAllRules();
+            System.out.println("-----");
 
-        Model      model    = new ModelImpl().addRule(rule1).addGlobal(var_results);
-        KieBase    kbase    = KieBaseBuilder.createKieBaseFromModel(model);
-        RuleImpl rule     = ( RuleImpl) kbase.getKiePackage("defaultpkg").getRules().toArray()[0];
+            /*
+             * In the first groupBy:
+             *   Mark+Mario become "(Mar, 87)"
+             *   Maciej becomes "(Mac, 39)"
+             *   Geoffrey becomes "(Geo, 35)"
+             *   Edson becomes "(Eds, 38)"
+             *   Edoardo becomes "(Edo, 33)"
+             *
+             * Then in the second groupBy:
+             *   "(Mar, 87)" and "(Mac, 39)" become "(Ma, 87)"
+             *   "(Eds, 38)" and "(Edo, 33)" become "(Ed, 38)"
+             *   "(Geo, 35)" becomes "(Ge, 35)"
+             */
 
-        // Ensure there is only a single root child
-        assertThat(rule.getLhs().getChildren().size()).isEqualTo(1);
+            assertThat(results.size()).isEqualTo(3);
+            assertThat(results.get("Ma")).isEqualTo(87);
+            assertThat(results.get("Ed")).isEqualTo(38);
+            assertThat(results.get("Ge")).isEqualTo(35);
+            results.clear();
 
-        // The expression must be merged up into the acc pattern
-        Pattern p = (Pattern) rule.getLhs().getChildren().get(0);
-        assertThat(((ClassObjectType) p.getObjectType()).getClassType()).isEqualTo(Object[].class);
-        LambdaConstraint l0 = (LambdaConstraint) p.getConstraints().get(0);
-        assertThat(((Predicate1.Impl)l0.getEvaluator().getConstraint().getPredicate1()).getLambda()).isSameAs(p1);
+            ksession.delete(meFH);
+            ksession.fireAllRules();
+            System.out.println("-----");
 
-        LambdaConstraint l1 = (LambdaConstraint) p.getConstraints().get(1);
-        assertThat(((Predicate1.Impl)l1.getEvaluator().getConstraint().getPredicate1()).getLambda()).isSameAs(p2);
+            // No Mario anymore, so "(Mar, 42)" instead of "(Mar, 87)".
+            // Therefore "(Ma, 42)".
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get("Ma")).isEqualTo(42);
+            results.clear();
 
-        KieSession ksession = kbase.newKieSession();
+            // "(Geo, 35)" is gone.
+            // "(Mat, 38)" is added, but Mark still wins, so "(Ma, 42)" stays.
+            ksession.delete(geoffreyFH);
+            ksession.insert(new Person("Matteo", 38));
+            ksession.fireAllRules();
 
-        List<String> results = new ArrayList<String>();
-        ksession.setGlobal( "results", results );
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get("Ma")).isEqualTo(42);
+        });
+    }
 
-        ksession.insert( new Person( "Mark", 42 ) );
+    public static class Group {
+        private final Object key;
+        private final Object value;
 
-        ksession.fireAllRules();
+        public Group( Object key, Object value ) {
+            this.key = key;
+            this.value = value;
+        }
 
-        assertThat(results.toString()).isEqualTo("[42:1]");
+        public Object getKey() {
+            return key;
+        }
+
+        public Object getValue() {
+            return value;
+        }
     }
 
     @Test
-    public void test2AccRewriteToNested() throws Exception {
-        final Global<List> var_results = D.globalOf( List.class, "defaultpkg", "results" );
+    public void testEmptyPatternOnGroupByKey() {
+        // DROOLS-6031
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule R1 when\n" +
+                "    groupby(" +
+                "        $p : Person ();" +
+                "        $key : $p.getName().substring(0, 1);" +
+                "        count()" +
+                "    )\n" +
+                "    String() from $key\n" +
+                "then\n" +
+                "    results.add($key);" +
+                "end";
 
-        final Variable<Person> var_$p = D.declarationOf( Person.class );
-        Variable<Integer> var_$age = D.declarationOf( Integer.class );
-        Variable<Integer> var_$sumOfAges = D.declarationOf( Integer.class );
-        Variable<Long> var_$countOfPersons = D.declarationOf( Long.class );
+        assertSessionHasProperties(str, ksession -> {
 
-        Predicate1<Long> cp = c -> c > 0;
+            List<String> results = new ArrayList<String>();
+            ksession.setGlobal("results", results);
 
-        Rule rule1 = D.rule( "R1" ).build(
-                D.accumulate(
-                        D.pattern( var_$p ).bind( var_$age, person -> person.getAge(), D.reactOn( "age" ) ),
-                        D.accFunction( org.drools.core.base.accumulators.IntegerSumAccumulateFunction::new, var_$age ).as( var_$sumOfAges ) ),
-                D.accumulate(
-                        D.pattern( var_$sumOfAges ),
-                        D.accFunction( org.drools.core.base.accumulators.CountAccumulateFunction::new ).as( var_$countOfPersons ) ),
-                // Filter
-                D.pattern( var_$countOfPersons ).expr(cp),
-                // Consequence
-                D.on( var_$countOfPersons, var_results )
-                        .execute( (drools, i, results) -> {
-                            InternalMatch internalMatch = ((org.drools.modelcompiler.consequence.DroolsImpl) drools).asKnowledgeHelper().getMatch();
-                            results.add(i + ":" + internalMatch.getObjectsDeep());
+            ksession.insert("A");
+            ksession.insert("test");
+            ksession.insert(new Person("Mark", 42));
 
-                        } ) );
-
-        Model model = new ModelImpl().addRule( rule1 ).addGlobal( var_results );
-        KieBase    kbase    = KieBaseBuilder.createKieBaseFromModel(model);
-        RuleImpl   rule     = ( RuleImpl) kbase.getKiePackage("defaultpkg").getRules().toArray()[0];
-        // Should only be a single child
-        assertThat(rule.getLhs().getChildren().size()).isEqualTo(1);
-
-        // Check correct result type and the filter was moved up
-        Pattern    p1  = (Pattern) rule.getLhs().getChildren().get(0);
-        assertThat(((ClassObjectType) p1.getObjectType()).getClassType()).isEqualTo(Long.class);
-        LambdaConstraint l0 = (LambdaConstraint) p1.getConstraints().get(0);
-        assertThat(((Predicate1.Impl)l0.getEvaluator().getConstraint().getPredicate1()).getLambda()).isSameAs(cp);
-
-        // The second acc was sucessfully nested inside
-        Accumulate acc = (Accumulate) p1.getSource();
-        assertThat(acc.getNestedElements().size()).isEqualTo(1);
-        Pattern p2 = (Pattern) acc.getNestedElements().get(0);
-        assertThat(((ClassObjectType) p2.getObjectType()).getClassType()).isEqualTo( Integer.class);
-
-        KieSession ksession = kbase.newKieSession();
-
-        List<String> results = new ArrayList<String>();
-        ksession.setGlobal( "results", results );
-
-        ksession.insert( new Person( "Mark", 42 ) );
-
-        ksession.fireAllRules();
-
-        assertThat(results.toString()).isEqualTo("[1:[1]]");
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get(0)).isEqualTo("M");
+        });
     }
 
     @Test
-    public void test2AccsWithGetObjectsDeep() throws Exception {
-        // DROOLS-6236
-        final Global<List> var_results = D.globalOf( List.class, "defaultpkg", "results" );
+    public void testFilterOnGroupByKey() {
+        // DROOLS-6031
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule R1 when\n" +
+                "    groupby(" +
+                "        $p : Person ();" +
+                "        $key : $p.getName().substring(0, 1);" +
+                "        count()" +
+                "    )\n" +
+                "    eval($key.length() > 0)\n" +
+                "    eval($key.length() < 2)\n" +
+                "then\n" +
+                "    results.add($key);" +
+                "end";
 
-        final Variable<Person> var_$p = D.declarationOf( Person.class );
-        Variable<Integer> var_$age = D.declarationOf( Integer.class );
-        Variable<Integer> var_$sumOfAges = D.declarationOf( Integer.class );
-        Variable<Long> var_$countOfPersons = D.declarationOf( Long.class, D.from(var_$p) );
+        assertSessionHasProperties(str, ksession -> {
 
-        Rule rule1 = D.rule( "R1" ).build(
-                D.accumulate(
-                        D.pattern( var_$p ).bind( var_$age, person -> person.getAge(), D.reactOn( "age" ) ),
-                        D.accFunction( org.drools.core.base.accumulators.IntegerSumAccumulateFunction::new, var_$age ).as( var_$sumOfAges ) ),
-                D.accumulate(
-                        D.pattern( var_$sumOfAges ),
-                        D.accFunction( org.drools.core.base.accumulators.CountAccumulateFunction::new ).as( var_$countOfPersons ) ),
-                D.pattern( var_$countOfPersons ),
-                // Consequence
-                D.on( var_$countOfPersons )
-                        .execute( (drools, i) -> {
-                            System.out.println(i);
-                            InternalMatch internalMatch = ((org.drools.modelcompiler.consequence.DroolsImpl) drools).asKnowledgeHelper().getMatch();
-                            System.out.println(internalMatch.getObjectsDeep());
-                        } ) );
+            List<String> results = new ArrayList<String>();
+            ksession.setGlobal("results", results);
 
-        Model model = new ModelImpl().addRule( rule1 ).addGlobal( var_results );
-        KieSession ksession = KieBaseBuilder.createKieBaseFromModel( model ).newKieSession();
+            ksession.insert("A");
+            ksession.insert("test");
+            ksession.insert(new Person("Mark", 42));
 
-        List<String> results = new ArrayList<String>();
-        ksession.setGlobal( "results", results );
-
-        ksession.insert( new Person( "Mark", 42 ) );
-
-        assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(results.size()).isEqualTo(1);
+            assertThat(results.get(0)).isEqualTo("M");
+        });
     }
 
-    public static <T> List<T> getObjectsIntoList(KieSession ksession, Class<T> clazz) {
-        return (List<T>) ksession.getObjects(new ClassObjectFilter(clazz)).stream().collect(Collectors.toList());
+    @Test
+    public void testDecomposedGroupByKey() {
+        // DROOLS-6031
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "import " + Pair.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule R1 when\n" +
+                "    groupby(" +
+                "        $p : Person ();" +
+                "        $key : Pair.create($p.getName().substring(0, 1), $p.getName().substring(1, 2));" +
+                "        count()" +
+                "    )\n" +
+                "    $subkeyA: String() from $key.getKey()\n" +
+                "    $subkeyB: String() from $key.getValue()\n" +
+                "then\n" +
+                "    results.add($subkeyA);" +
+                "    results.add($subkeyB);" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            final List<String> results = new ArrayList<>();
+            ksession.setGlobal("results", results);
+
+            ksession.insert("A");
+            ksession.insert("test");
+            ksession.insert(new Person("Mark", 42));
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(results.size()).isEqualTo(2);
+            assertThat(results.get(0)).isEqualTo("M");
+            assertThat(results.get(1)).isEqualTo("a");
+        });
+    }
+
+    @Test
+    public void testDecomposedGroupByKeyAndAccumulate() {
+        // DROOLS-6031
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Pair.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        $p : Person ();" +
+                "        $key : Pair.create($p.getName().substring(0, 1), $p.getName().substring(1, 2));" +
+                "        $accresult : count()" +
+                "    )\n" +
+                "    $subkeyA : Object() from $key.getKey()\n" +
+                "    $subkeyB : Object() from $key.getValue()\n" +
+                "    eval($accresult > 0)" +
+                "then\n" +
+                "    results.add($subkeyA);\n" +
+                "    results.add($subkeyB);\n" +
+                "    results.add($accresult);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            final List<Object> results = new ArrayList<>();
+            ksession.setGlobal("results", results);
+
+            ksession.insert("A");
+            ksession.insert("test");
+            ksession.insert(new Person("Mark", 42));
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(results.size()).isEqualTo(3);
+            assertThat(results.get(0)).isEqualTo("M");
+            assertThat(results.get(1)).isEqualTo("a");
+            assertThat(results.get(2)).isEqualTo(1L);
+        });
+    }
+
+    @Test
+    public void testDecomposedGroupByKeyAnd2Accumulates() {
+        // DROOLS-6031
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Pair.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        $p : Person () and $p2 : Person () and $accumulate : Pair() from Pair.create($p, $p2);" +
+                "        $key : Pair.create($p.getName().substring(0, 1), $p.getName().substring(1, 2));" +
+                "        $accresult : collectList(), $accresult2 : collectList()" +
+                "    )\n" +
+                "    $subkeyA : Object() from $key.getKey()\n" +
+                "    $subkeyB : Object() from $key.getValue()\n" +
+                "    eval($accresult != null)" +
+                "then\n" +
+                "    results.add($subkeyA);\n" +
+                "    results.add($subkeyB);\n" +
+                "    results.add($accresult);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            final List<Object> results = new ArrayList<>();
+            ksession.setGlobal("results", results);
+
+            ksession.insert("A");
+            ksession.insert("test");
+            ksession.insert(new Person("Mark", 42));
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(results.size()).isEqualTo(3);
+            assertThat(results.get(0)).isEqualTo("M");
+            assertThat(results.get(1)).isEqualTo("a");
+        });
+    }
+
+    @Test
+    public void testDecomposedGroupByKeyAnd2AccumulatesInConsequence() {
+        // DROOLS-6031
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Pair.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        $p : Person () and $p2 : Person () and $accumulate : Pair() from Pair.create($p, $p2);" +
+                "        $key : Pair.create($p.getName().substring(0, 1), $p.getName().substring(1, 2));" +
+                "        $accresult : collectList(), $accresult2 : collectList()" +
+                "    )\n" +
+                "    eval($accresult2 != null)" +
+                "then\n" +
+                "    results.add($key);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            final List<Object> results = new ArrayList<>();
+            ksession.setGlobal("results", results);
+
+            ksession.insert("A");
+            ksession.insert("test");
+            ksession.insert(new Person("Mark", 42));
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(results.size()).isEqualTo(1);
+        });
+    }
+
+    @Test
+    public void testNestedGroupBy1a() {
+        // DROOLS-6045
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule X when\n" +
+                "    accumulate(" +
+                "        groupby($p: Person (); $key: $p.getAge(); count()) and eval($key > 0);" +
+                "        $accresult : collectList($key)" +
+                "    )\n" +
+                "then\n" +
+                "    results.add($accresult);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            final List<Object> results = new ArrayList<>();
+            ksession.setGlobal("results", results);
+
+            ksession.insert(new Person("Mark", 42));
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+            System.out.println(results);
+            assertThat(results).containsOnly(Collections.singletonList(42));
+        });
+    }
+
+    @Test
+    public void testNestedGroupBy1b() {
+        // DROOLS-6045
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule R1 when\n" +
+                "    accumulate(" +
+                "        groupby($p: Person (); $key: $p.getAge(); count()) and Integer() from $key;" +
+                "        $accresult : collectList($key)" +
+                "    )\n" +
+                "then\n" +
+                "    results.add($accresult);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            final List<Object> results = new ArrayList<>();
+            ksession.setGlobal("results", results);
+
+            ksession.insert(new Person("Mark", 42));
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(results).containsOnly(Collections.singletonList(42));
+        });
+    }
+
+    @Test
+    public void testNestedGroupBy2() {
+        // DROOLS-6045
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule R1 when\n" +
+                "    groupby(" +
+                "        groupby($p: Person (); $key: $p.getAge(); count()) and eval($key > 0);" +
+                "        $keyOuter: (int)($key * 2);" + // MVEL thinks type(int * 2) == Double,
+                                                        // meaning we need to cast for it to get the
+                                                        // correct type
+                "        $accresult : collectList($keyOuter)" +
+                "    )\n" +
+                "then\n" +
+                "    results.add($accresult);\n" +
+                "end";
+        assertSessionHasProperties(str, ksession -> {
+
+            final List<Object> results = new ArrayList<>();
+            ksession.setGlobal("results", results);
+
+            ksession.insert("A");
+            ksession.insert("test");
+            ksession.insert(new Person("Mark", 42));
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+        });
+    }
+
+    @Test
+    public void testNestedGroupBy3() {
+        // DROOLS-6045
+        // TODO: For some reason, the compiled class expression thinks $p should be an integer?
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Pair.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule R1 when\n" +
+                "    groupby(" +
+                "        groupby($p: Person (); $key: $p.getName(); $accresult: count()) and eval($accresult > 0);" +
+                "        $keyOuter: Pair.create($key, $accresult);" +
+                "        count()" +
+                "    )\n" +
+                "then\n" +
+                "    results.add($keyOuter);\n" +
+                "end";
+        assertSessionHasProperties(str, ksession -> {
+
+            final List<Object> results = new ArrayList<>();
+            ksession.setGlobal("results", results);
+
+            ksession.insert("A");
+            ksession.insert("test");
+            ksession.insert(new Person("Mark", 42));
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(results).containsOnly(Pair.create("Mark", 1L));
+        });
+    }
+
+    @Test
+    public void testFilterOnAccumulateResultWithDecomposedGroupByKey() {
+        // DROOLS-6045
+        // TODO: For some reason, the compiled class expression thinks $p should be an integer?
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Pair.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "rule X when\n" +
+                "    groupby(" +
+                "        $p : Person ($age: age, this != null);" +
+                "        $key : Pair.create($p.getName().substring(0, 1), $p.getName().substring(1, 2));" +
+                "        $accresult : sum($age)" +
+                "    )\n" +
+                "    $subkeyA : Object() from $key.getKey()\n" +
+                "    $subkeyB : Object() from $key.getValue()\n" +
+                "    eval($accresult != null && $subkeyA != null && $subkeyB != null)" +
+                "then\n" +
+                "    results.add($subkeyA);\n" +
+                "    results.add($subkeyB);\n" +
+                "    results.add($accresult);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            final List<Object> results = new ArrayList<>();
+            ksession.setGlobal("results", results);
+
+            ksession.insert("A");
+            ksession.insert("test");
+            ksession.insert(new Person("Mark", 42));
+            assertThat(ksession.fireAllRules()).isEqualTo(1);
+            assertThat(results.size()).isEqualTo(3);
+            assertThat(results.get(0)).isEqualTo("M");
+            assertThat(results.get(1)).isEqualTo("a");
+            assertThat(results.get(2)).isEqualTo(42);
+        });
+    }
+// These two test are commented out, until we figure out the correct way to do this and limitations.
+// If no correct way can be found, the tests can be deleted.
+//    @Test
+//    public void testErrorOnCompositeBind() {
+//        Global<Map> var_results = D.globalOf(Map.class, "defaultpkg", "results");
+//
+//        Variable<String> var_$key_1 = D.declarationOf(String.class);
+//        Variable<Person> var_$p = D.declarationOf(Person.class);
+//        Variable<Integer> var_$age = D.declarationOf(Integer.class);
+//        Variable<Integer> var_$sumOfAges = D.declarationOf(Integer.class);
+//        Variable<Group> var_$g1 = D.declarationOf(Group.class);
+//        Variable<Integer> var_$g1_value = D.declarationOf(Integer.class);
+//        Variable<String> var_$key_2 = D.declarationOf(String.class);
+//        Variable<Integer> var_$maxOfValues = D.declarationOf(Integer.class);
+//
+//        Rule rule1 = D.rule("R1").build(
+//              D.groupBy(
+//                    D.pattern(var_$p).bind(var_$age, person -> person.getAge()),
+//                    var_$p, var_$key_1, groupResult -> var_$p.getName().substring(0, 2),
+//                    D.accFunction( IntegerMaxAccumulateFunction::new, var_$age).as(var_$maxOfValues)),
+//              D.pattern(var_$key_1).bind(var_$g1, var_$maxOfValues, (k, s) -> new Group(k, s)),
+//              D.on(var_$key_1)
+//               .execute($key -> { System.out.println($key); }));
+//
+//        try {
+//            Model      model    = new ModelImpl().addRule(rule1).addGlobal(var_results);
+//            KieSession ksession = KieBaseBuilder.createKieBaseFromModel(model).newKieSession();
+//            fail("Composite Bindings are not allowed");
+//        } catch(Exception e) {
+//
+//        }
+//    }
+//
+//    @Test
+//    public void testErrorOnNestedCompositeBind() {
+//        Global<Map> var_results = D.globalOf(Map.class, "defaultpkg", "results");
+//
+//        Variable<String> var_$key_1 = D.declarationOf(String.class);
+//        Variable<Person> var_$p = D.declarationOf(Person.class);
+//        Variable<Integer> var_$age = D.declarationOf(Integer.class);
+//        Variable<Integer> var_$sumOfAges = D.declarationOf(Integer.class);
+//        Variable<Group> var_$g1 = D.declarationOf(Group.class);
+//        Variable<Integer> var_$g1_value = D.declarationOf(Integer.class);
+//        Variable<String> var_$key_2 = D.declarationOf(String.class);
+//        Variable<Integer> var_$maxOfValues = D.declarationOf(Integer.class);
+//
+//        Rule rule1 = D.rule("R1").build(
+//              D.groupBy(
+//                    D.and(
+//                          D.groupBy(
+//                                D.pattern(var_$p).bind(var_$age, person -> person.getAge()),
+//                                var_$p, var_$key_1, person -> person.getName().substring(0, 3),
+//                                D.accFunction( IntegerSumAccumulateFunction::new, var_$age).as(var_$sumOfAges)),
+//                          D.pattern(var_$key_1).bind(var_$g1, var_$sumOfAges, (k, s) -> new Group(k, s))), // this should fail, due to two declarations
+//                    var_$g1, var_$key_2, groupResult -> ((String)groupResult.getKey()).substring(0, 2),
+//                    D.accFunction( IntegerMaxAccumulateFunction::new, var_$g1_value).as(var_$maxOfValues)),
+//              D.on(var_$key_1)
+//               .execute($key -> { System.out.println($key); }));
+//
+//        try {
+//            Model      model    = new ModelImpl().addRule(rule1).addGlobal(var_results);
+//            KieSession ksession = KieBaseBuilder.createKieBaseFromModel(model).newKieSession();
+//            fail("Composite Bindings are not allowed");
+//        } catch(Exception e) {
+//
+//        }
+//    }
+
+    @Test
+    public void testNestedRewrite() {
+        // DROOLS-5697
+        String str =
+                "import " + Person.class.getCanonicalName() + ";" +
+                "import " + Pair.class.getCanonicalName() + ";" +
+                "import " + List.class.getCanonicalName() + ";" +
+                "global List results;\n" +
+                "function Integer eval( Integer value ){ return value; }\n" +
+                "rule R1 when\n" +
+                "    accumulate(" +
+                "        accumulate($p : Person ($age : age); $sumOfAges : sum($age)) " +
+                "        and $g1 : Integer() from eval($sumOfAges + 1) ;" +
+                "        $maxOfValues : max($g1)" +
+                "    )\n" +
+                "then\n" +
+                "    System.out.println($maxOfValues);\n" +
+                "    results.add($maxOfValues);\n" +
+                "end";
+
+        assertSessionHasProperties(str, ksession -> {
+
+            List results = new ArrayList();
+            ksession.setGlobal("results", results);
+
+            FactHandle fhMark = ksession.insert(new Person("Mark", 42));
+            FactHandle fhEdoardo = ksession.insert(new Person("Edoardo", 33));
+            ksession.fireAllRules();
+            assertThat(results.contains(76)).isTrue();
+
+            ksession.insert(new Person("Edson", 38));
+            ksession.fireAllRules();
+            assertThat(results.contains(114)).isTrue();
+
+            ksession.delete(fhEdoardo);
+            ksession.fireAllRules();
+            assertThat(results.contains(81)).isTrue();
+
+            ksession.update(fhMark, new Person("Mark", 45));
+            ksession.fireAllRules();
+            assertThat(results.contains(84)).isTrue();
+        });
     }
 }
